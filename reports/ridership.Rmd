@@ -1,0 +1,134 @@
+---
+title: "A quick-n-dirty analysis of SMART train ridership"
+output: html_notebook
+---
+
+
+```{r echo=F}
+library(data.table)
+library(ggplot2)
+library(MASS)
+library(ggrepel)
+
+ridership <- fread("../data/SMART Ridership for Web Posting.csv", header = T)
+
+setnames(ridership, c("Day of the Week", "Onboard Count","Notes About Day"), c("DOW","COUNT","NOTES"))
+
+ridership[ , WEEKEND := "Weekday"]
+ridership[DOW %in% c("Saturday","Sunday"), WEEKEND := "Weekend"]
+ridership[ , DIGITDATE := as.Date(Date, "%m/%d/%Y")]
+
+ridership[ , WEEK := strftime(DIGITDATE,"%V")]
+ridership[ , MONTH := strftime(DIGITDATE,"%m")]
+ridership[ , YEAR := strftime(DIGITDATE,"%Y")]
+
+
+ridership[grepl("N/A",NOTES), NOTES := NA]
+
+
+#Labels
+ridership[grepl("ribbon",NOTES, ignore.case = T), LABEL := NOTES]
+ridership[grepl("PSPS|Fire",NOTES, ignore.case = T), LABEL := "Fire/Public Safety"]
+ridership[grepl("preview",NOTES, ignore.case = T), LABEL := "Preview"]
+ridership[grepl("annulled",NOTES, ignore.case = T), LABEL := "Annulled trains"]
+ridership[grepl("xmas|halloween|holiday|MLK|MCF|veteran|Columbus|thanksgiving|celebration|new year",NOTES, ignore.case = T), LABEL := "Annulled trains"]
+ridership[grepl("annulled",NOTES, ignore.case = T), LABEL := "Annulled trains"]
+ridership[grepl("interim|modified",NOTES, ignore.case = T), LABEL := "Interim schedule"]
+ridership[grepl("rain|storm|flooding",NOTES, ignore.case = T), LABEL := "Storm"]
+ridership[grepl("kids",NOTES, ignore.case = T), LABEL := "Kids ride free"]
+ridership[grepl("Free",NOTES, ignore.case = T), LABEL := "Free service"]
+#unique(ridership$LABEL)
+
+#Weekly
+ridership.weekly <- ridership[ , .("COUNT" = sum(COUNT)), by = .(WEEK,YEAR,WEEKEND)]
+ridership.weekly[ , DIGITDATE := as.Date(paste("1",WEEK,YEAR), "%u %U %Y")]
+ridership.weekly <- dcast(ridership.weekly, DIGITDATE~WEEKEND, value.var = "COUNT")
+ridership.weekly[ , Total := Weekday+Weekend]
+ridership.weekly <- melt(ridership.weekly, id.vars = "DIGITDATE", variable.name = "VAR",value.name = "COUNT")
+
+#Monthly
+ridership.monthly <- ridership[ , .("COUNT" = sum(COUNT)), by = .(MONTH,YEAR,WEEKEND)]
+ridership.monthly[ , DIGITDATE := as.Date(paste("15",MONTH,YEAR), "%d %m %Y")]
+ridership.monthly <- dcast(ridership.monthly, DIGITDATE~WEEKEND, value.var = "COUNT")
+ridership.monthly[ , Total := Weekday+Weekend]
+ridership.monthly <- melt(ridership.monthly, id.vars = "DIGITDATE", variable.name = "VAR",value.name = "COUNT")
+
+```
+
+Looking generally as total weekly ridership, SMART seems to have enjoyed a huge initial increase (which is to be expected when starting from zero) before plateauing. The points are fitted with a LOESS moving average with 1/2-week span to give a general sense of ridership. However, there are extreme outliers in the data which throw off the average.
+
+
+```{r echo=F}
+###
+ggplot(data=ridership.weekly[VAR=='Total',], aes(x=DIGITDATE, y=COUNT)) +
+  geom_point(size=0.8) +
+  geom_smooth(method = "loess", span=0.5, se=F, aes(linetype = "Loess Moving Average")) +
+  scale_x_date(NULL, date_labels = "%b-%y", date_breaks = "2 month") +
+  scale_y_continuous("Weekly Ridership", labels = scales::comma) +
+  scale_color_brewer(NULL, palette = "Set1") +
+  scale_linetype(NULL) +
+  theme_classic() +
+  theme(axis.text.x = element_text(angle=45, hjust=1),
+        legend.position = "bottom",
+        legend.background = element_blank())
+
+```
+
+Adding a bit more detail at the daily ridership level and separating by weekday and weekend trips, a different picture emerges. It shows that weekend ridership quickly dropped off, likely as the novelty of the new train service wore off, but has since stabilized. In contrast, weekday ridership has remained fairly steady with a gradual up and down in 2018 and a series of sharp up and downs in 2019. 
+
+```{r echo=F}
+###
+ggplot(data=ridership, aes(x=DIGITDATE, y=COUNT, linetype=WEEKEND, color=WEEKEND)) + 
+  geom_point(size=0.8) +
+  geom_smooth(method = "loess", span=0.5, se=F) +
+  scale_x_date(NULL, date_labels = "%b-%y", date_breaks = "2 month") +
+  scale_y_continuous("Ridership", labels = scales::comma) +
+  scale_color_brewer(NULL, palette = "Set1") +
+  scale_linetype(NULL) +
+  theme_classic() +
+  theme(axis.text.x = element_text(angle=45, hjust=1),
+        legend.position = "bottom",
+        legend.background = element_blank())
+```
+
+Another crude measure to show a year-by-year trend is to simply fit a linear regression by year. This tells much of the same story as before, declining weekends before stabilizing with steady gradual growth of weekday ridership. However, an interesting result here is the very steep increase starting at the end of 2019 around when the Larkspur Landing station opened. It will be interesting to watch this further to see if this is a temporary anomaly or continued trend fueled by rail-ferry integrated trips.
+
+
+```{r echo=F}
+###
+ggplot(data=ridership, aes(x=DIGITDATE, y=COUNT, color=WEEKEND)) + 
+  geom_point(size=0.8) +
+  geom_smooth(method = "lm", se=F, aes(group = interaction(YEAR,WEEKEND))) +
+  geom_label_repel(data=ridership[grepl("larkspur", LABEL, ignore.case = T),],
+                   aes(label = LABEL), box.padding = 3, color='black', direction = 'y', segment.size = 1,
+                   arrow = arrow(angle = 30, length = unit(0.125, "inches"), ends = "last", type = "open")) +
+  #geom_smooth(method = "loess", span=0.5, se=F, aes(linetype = "Loess Moving Average", group=WEEKEND), color='gray50') +
+  scale_x_date(NULL, date_labels = "%b-%y", date_breaks = "2 month") +
+  scale_y_continuous("Ridership", labels = scales::comma) +
+  scale_color_brewer(NULL, palette = "Set1") +
+  theme_classic() +
+  theme(axis.text.x = element_text(angle=45, hjust=1), legend.position = "bottom",)
+
+```
+
+In an attempt to explain some of the variation in the data visually, we can simply color-code the points based on a few useful notes in the data. Most of the outliers seem to correspond with some kind of event. Moreover, the relatively instability throughout 2019 seems to correspond with the high number of interruptions in the service.
+
+```{r echo=F}
+###
+ggplot(data=ridership, aes(x=DIGITDATE, y=COUNT, shape=WEEKEND)) + 
+  geom_point(size=1) +
+  geom_point(data=ridership[!is.na(LABEL),], aes(color=LABEL, shape=WEEKEND)) +
+  scale_x_date(NULL, date_labels = "%b-%y", date_breaks = "2 month") +
+  scale_y_continuous("Ridership", labels = scales::comma) +
+  scale_color_brewer(NULL, palette = "Set1") +
+  scale_shape(NULL) +
+  theme_classic() +
+  theme(axis.text.x = element_text(angle=45, hjust=1),
+        legend.position = "bottom",
+        legend.background = element_blank(),
+        legend.key.size = unit(1, "pt"))
+```
+
+So to all the nay-sayers out there, SMART is doing well considering its still a young service and is building ridership despite a national decline in transit ridership. Ridership can be expected to gradually grow as road congestion will inevitably increase and the system becomes more stable with construction finalizing. Moreover, ridership can further grow with better land-use practices (e.g., housing density near transit) and better integration with other modes (e.g., bikes, buses, and ferries).
+
+
